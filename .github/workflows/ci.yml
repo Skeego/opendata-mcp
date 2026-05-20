@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Daily live smoke at 13:15 UTC. Skipped if OPENDATA_BASE_URL secret not set.
+    - cron: "15 13 * * *"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: typecheck · build · unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Unit tests (mocked fetch — offline)
+        # OPENDATA_BASE_URL intentionally unset so live tests skip.
+        run: npm test
+
+  live-smoke:
+    name: live smoke (gated on secret)
+    runs-on: ubuntu-latest
+    needs: build-test
+    # Run on schedule + manual dispatch; also run on direct push to main so the
+    # badge reflects current upstream reality. Skip entirely on PRs (forks don't
+    # get secrets).
+    if: github.event_name != 'pull_request'
+    # Don't fail the workflow on upstream-API outages — this is a health canary,
+    # not a gate. Inspect the job log to see what happened.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Live tests against the real API
+        env:
+          OPENDATA_BASE_URL: ${{ secrets.OPENDATA_BASE_URL }}
+          OPENDATA_API_KEY: ${{ secrets.OPENDATA_API_KEY }}
+        run: |
+          if [ -z "$OPENDATA_BASE_URL" ]; then
+            echo "OPENDATA_BASE_URL secret not configured — skipping live smoke."
+            exit 0
+          fi
+          npx vitest run src/__tests__/live.test.ts --reporter=default

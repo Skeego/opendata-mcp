@@ -1,5 +1,7 @@
 # opendata-mcp
 
+[![CI](https://github.com/skeego/opendata-mcp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/skeego/opendata-mcp/actions/workflows/ci.yml)
+
 A [Model Context Protocol](https://modelcontextprotocol.io/) server for the **OpenData Platform** API. Tools are generated dynamically from the bundled OpenAPI 3.1 spec — every endpoint is exposed as an MCP tool with a typed input schema and a transparent HTTP handler.
 
 - **GET endpoints**: 76 — exposed without auth (the API serves them unauthenticated).
@@ -65,6 +67,8 @@ Live tests against the real API run **only** when `OPENDATA_BASE_URL` is set:
 ```bash
 OPENDATA_BASE_URL=https://api.tryopendata.ai npm test
 ```
+
+CI runs the unit suite on every push/PR ([badge above](#opendata-mcp)). The live smoke job runs on a daily schedule (and on pushes to `main`) only if the repo has `OPENDATA_BASE_URL` (and optionally `OPENDATA_API_KEY`) configured as Actions secrets — it's `continue-on-error: true` so a transient upstream outage doesn't show the repo as red.
 
 ## How tool generation works
 
