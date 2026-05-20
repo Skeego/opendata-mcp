@@ -1,6 +1,6 @@
 {
   "name": "opendata-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server for the OpenData Platform API. Tools are generated dynamically from the bundled OpenAPI 3.1 spec.",
   "type": "module",
   "main": "dist/index.js",

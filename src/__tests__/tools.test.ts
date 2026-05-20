@@ -139,3 +139,83 @@ describe("invoke — URL + auth contract (mocked fetch)", () => {
     expect(r.success).toBe(false);
   });
 });
+
+describe("retry policy — bounded retries on transient failures only", () => {
+  const cfg: ClientConfig = {
+    baseUrl: "https://example.test",
+    apiKey: "od_test_KEY",
+    timeoutMs: 5_000,
+    maxAttempts: 3,
+  };
+
+  function tool() {
+    const tools = buildTools(spec, ops, { readOnly: false });
+    return tools.find((x) => x.name === "list_datasets_v1_datasets_get")!;
+  }
+  function ok(body: unknown = { items: [] }): Response {
+    return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  }
+  function err(status: number, detail = "fail"): Response {
+    return new Response(JSON.stringify({ detail }), { status, headers: { "content-type": "application/json" } });
+  }
+
+  it("retries on 503 then succeeds", async () => {
+    const spy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(err(503))
+      .mockResolvedValueOnce(ok({ items: [{ id: 1 }] }));
+    const res = await tool().invoke({}, cfg);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(res.content[0].text).toMatch(/→ 200\b/);
+  });
+
+  it("retries on 502/504 too (each transient)", async () => {
+    for (const code of [502, 504]) {
+      const spy = vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(err(code))
+        .mockResolvedValueOnce(ok());
+      const res = await tool().invoke({}, cfg);
+      expect(spy, `expected retry on ${code}`).toHaveBeenCalledTimes(2);
+      expect(res.content[0].text).toMatch(/→ 200\b/);
+      spy.mockRestore();
+    }
+  });
+
+  it("does NOT retry on 500 (server said 'I tried, it broke' — hammering hurts)", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(err(500, "internal"));
+    const res = await tool().invoke({}, cfg);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(res.content[0].text).toMatch(/ERROR /);
+    expect(res.content[0].text).toMatch(/→ 500\b/);
+    // requestId surfaces in the error text for correlation
+    expect(res.content[0].text).toMatch(/rid=[0-9a-f]{16}/);
+  });
+
+  it("does NOT retry on 4xx (client error — retrying won't help)", async () => {
+    for (const code of [400, 401, 404, 422]) {
+      const spy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(err(code));
+      const res = await tool().invoke({}, cfg);
+      expect(spy, `expected no retry on ${code}`).toHaveBeenCalledTimes(1);
+      expect(res.content[0].text).toMatch(/ERROR /);
+      spy.mockRestore();
+    }
+  });
+
+  it("retries on network error then succeeds", async () => {
+    const spy = vi.spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new TypeError("fetch failed: ECONNRESET"))
+      .mockResolvedValueOnce(ok());
+    const res = await tool().invoke({}, cfg);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(res.content[0].text).toMatch(/→ 200\b/);
+  });
+
+  it("gives up after maxAttempts on persistent transient failure", async () => {
+    // Mint a fresh Response per call — Web Response bodies are single-use.
+    const spy = vi.spyOn(globalThis, "fetch")
+      .mockImplementation(async () => err(503));
+    const res = await tool().invoke({}, cfg);
+    expect(spy).toHaveBeenCalledTimes(3);   // matches cfg.maxAttempts
+    expect(res.content[0].text).toMatch(/ERROR /);
+    expect(res.content[0].text).toMatch(/→ 503\b/);
+  });
+});

@@ -21,9 +21,11 @@ Copy `.env.example` → `.env` (or set in your MCP client config) and fill in:
 
 ```env
 OPENDATA_BASE_URL=https://api.tryopendata.ai   # required at call time
-OPENDATA_API_KEY=od_live_xxx                         # required for writes
-# OPENDATA_READ_ONLY=true                            # optional: only register GET tools
-# OPENDATA_TIMEOUT_MS=30000                          # optional: per-request timeout
+OPENDATA_API_KEY=od_live_xxx                   # required for writes
+# OPENDATA_READ_ONLY=true                      # optional: only register GET tools
+# OPENDATA_TIMEOUT_MS=30000                    # optional: per-request timeout
+# OPENDATA_MAX_ATTEMPTS=3                      # optional: total HTTP attempts (retries are bounded; see below)
+# OPENDATA_LOG_LEVEL=info                      # optional: off|error|info|debug
 ```
 
 Secrets are never read from the repo. `.env` is gitignored; `.env.example` ships placeholders only.
@@ -84,6 +86,12 @@ The auth contract is enforced at the client layer (`src/api-client.ts`):
 
 - GET → no auth header is sent. If you pass a key it's still ignored.
 - Non-GET → `OPENDATA_API_KEY` is required; the request fails fast with a clear error if it's missing.
+
+## Logging, retries, and shutdown
+
+- **Structured logging** to stderr (stdout is reserved for the MCP protocol). One JSON object per line: `{ts, level, msg, ...fields}`. Tuned via `OPENDATA_LOG_LEVEL` (`off|error|info|debug`, default `info`). Every tool invocation carries a short `rid` (request id) that also surfaces in any error message returned to the client — so a user can quote an `ERROR (rid=…)` and you can grep it in logs.
+- **Bounded retries** on transient failures only: `502 / 503 / 504` and network errors are retried with jittered exponential backoff (200ms → 600ms → 1.4s, capped). `500` and any `4xx` are **never** retried — a 500 means "I tried, it broke" and retrying just hammers a server that already gave its answer; a 4xx means the request is wrong and retrying won't help. Total attempts via `OPENDATA_MAX_ATTEMPTS` (default 3).
+- **Graceful shutdown** on `SIGINT` / `SIGTERM`: the MCP transport is closed before `process.exit` so any in-flight tool calls have a chance to land.
 
 ## Layout
 

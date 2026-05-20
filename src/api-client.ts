@@ -1,11 +1,21 @@
 /** HTTP client that turns a normalized OpenAPI operation + a flat parameter
  * object into an actual API call. Encapsulates the auth contract:
- * GET = no auth required; non-GET = Bearer from OPENDATA_API_KEY. */
+ *   GET = no auth required; non-GET = Bearer from OPENDATA_API_KEY.
+ *
+ * Also implements bounded retries on clearly-transient failures (502/503/504
+ * and connection-level errors) — explicitly NOT on 500 or any 4xx, because
+ * 500 means "I tried, it broke" and 4xx means "your request is wrong";
+ * retrying either just hammers a working answer of 'no'.
+ */
+
+import { log, newRequestId } from "./logger.js";
 
 export interface ClientConfig {
   baseUrl: string | undefined;
   apiKey: string | undefined;
   timeoutMs: number;
+  /** Total HTTP attempts (initial + retries) on transient failures. Default 3. */
+  maxAttempts?: number;
 }
 
 export interface CallSpec {
@@ -13,30 +23,37 @@ export interface CallSpec {
   path: string;                     // OpenAPI path, e.g. /v1/datasets/{provider}
   pathParamNames: string[];
   queryParamNames: string[];
-  /** Names of params that should be treated as headers (rare; we don't see any in this spec). */
-  headerParamNames?: string[];
+  /** Optional tool name — included in log lines for correlation. */
+  toolName?: string;
 }
 
 export interface CallArgs {
   [key: string]: unknown;
-  /** Optional request body for non-GET ops. */
   body?: unknown;
 }
 
 export interface CallResult {
   ok: boolean;
   status: number;
-  /** Parsed JSON when content-type was JSON; else raw text. */
   data: unknown;
   /** A short, human-readable summary suitable for an MCP text response. */
   summary: string;
+  /** Per-invocation correlation id (also appears in log lines). */
+  requestId: string;
 }
 
 export class ApiError extends Error {
-  constructor(message: string, public status: number, public body: unknown) {
+  constructor(
+    message: string,
+    public status: number,
+    public body: unknown,
+    public requestId: string,
+  ) {
     super(message);
   }
 }
+
+const TRANSIENT_STATUSES = new Set([502, 503, 504]);
 
 function substitutePath(path: string, args: Record<string, unknown>, names: string[]): string {
   let out = path;
@@ -62,11 +79,22 @@ function buildQuery(args: Record<string, unknown>, names: string[]): string {
   return s ? `?${s}` : "";
 }
 
+function backoffMs(attempt: number): number {
+  // 200ms, 600ms, 1.4s — capped — with ±20% jitter to avoid thundering herd.
+  const base = Math.min(200 * 3 ** (attempt - 1), 5_000);
+  const jitter = (Math.random() * 0.4 - 0.2) * base;
+  return Math.max(0, Math.floor(base + jitter));
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 export async function callApi(
   cfg: ClientConfig,
   call: CallSpec,
   args: CallArgs,
 ): Promise<CallResult> {
+  const requestId = newRequestId();
+
   if (!cfg.baseUrl) {
     throw new Error(
       "OPENDATA_BASE_URL is not set. Configure it in the environment before invoking API tools.",
@@ -95,28 +123,72 @@ export async function callApi(
     init.body = typeof args.body === "string" ? args.body : JSON.stringify(args.body);
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
-  init.signal = controller.signal;
+  const maxAttempts = Math.max(1, cfg.maxAttempts ?? 3);
+  let lastErr: unknown;
 
-  let res: Response;
-  try {
-    res = await fetch(url, init);
-  } finally {
-    clearTimeout(timer);
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const started = Date.now();
+    log.debug("api.request", {
+      rid: requestId, tool: call.toolName, attempt, method: call.method, url,
+    });
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
+
+    try {
+      const res = await fetch(url, { ...init, signal: controller.signal });
+      clearTimeout(timer);
+      const ms = Date.now() - started;
+
+      const ct = res.headers.get("content-type") || "";
+      const isJson = ct.includes("application/json");
+      const rawText = await res.text();
+      const data: unknown = isJson && rawText ? safeJson(rawText) : rawText;
+
+      const summary = `${call.method.toUpperCase()} ${url} → ${res.status} ${res.statusText}`;
+
+      if (res.ok) {
+        log.info("api.success", {
+          rid: requestId, tool: call.toolName, attempt, method: call.method, status: res.status, ms,
+        });
+        return { ok: true, status: res.status, data, summary, requestId };
+      }
+
+      // Non-OK. Retry only on the clearly-transient gateway/proxy class.
+      const transient = TRANSIENT_STATUSES.has(res.status);
+      log[transient && attempt < maxAttempts ? "info" : "error"]("api.non_ok", {
+        rid: requestId, tool: call.toolName, attempt, method: call.method, status: res.status, ms,
+        transient, willRetry: transient && attempt < maxAttempts,
+        bodyPreview: typeof data === "string" ? data.slice(0, 240) : JSON.stringify(data).slice(0, 240),
+      });
+      if (transient && attempt < maxAttempts) {
+        await sleep(backoffMs(attempt));
+        continue;
+      }
+      throw new ApiError(`${summary} — rid=${requestId} — ${typeof data === "string" ? data.slice(0, 240) : JSON.stringify(data).slice(0, 240)}`, res.status, data, requestId);
+    } catch (err) {
+      clearTimeout(timer);
+      lastErr = err;
+      // Don't double-retry an ApiError thrown above for a 4xx/500.
+      if (err instanceof ApiError) throw err;
+      // Network / abort / DNS / etc — these ARE transient by class.
+      const isAbort = (err as { name?: string } | undefined)?.name === "AbortError";
+      const ms = Date.now() - started;
+      log[attempt < maxAttempts ? "info" : "error"]("api.network_error", {
+        rid: requestId, tool: call.toolName, attempt, method: call.method, ms,
+        abort: isAbort, message: err instanceof Error ? err.message : String(err),
+        willRetry: attempt < maxAttempts,
+      });
+      if (attempt < maxAttempts) {
+        await sleep(backoffMs(attempt));
+        continue;
+      }
+      // Out of retries — bubble out.
+      throw err;
+    }
   }
-
-  const ct = res.headers.get("content-type") || "";
-  const isJson = ct.includes("application/json");
-  const rawText = await res.text();
-  const data: unknown = isJson && rawText ? safeJson(rawText) : rawText;
-
-  const summary = `${call.method.toUpperCase()} ${url} → ${res.status} ${res.statusText}`;
-  if (!res.ok) {
-    throw new ApiError(`${summary} — ${typeof data === "string" ? data.slice(0, 240) : JSON.stringify(data).slice(0, 240)}`, res.status, data);
-  }
-
-  return { ok: true, status: res.status, data, summary };
+  // unreachable
+  throw lastErr ?? new Error("callApi: unreachable");
 }
 
 function safeJson(s: string): unknown {
