@@ -21,9 +21,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # pnpm version is sourced from packageManager in package.json (single
+      # source of truth). Setting `version:` here would conflict.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - uses: actions/setup-node@v4
         with:
@@ -51,9 +51,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # pnpm version is sourced from packageManager in package.json (single
+      # source of truth). Setting `version:` here would conflict.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - uses: actions/setup-node@v4
         with:
