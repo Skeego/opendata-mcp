@@ -18,7 +18,7 @@ npm run build
 Copy `.env.example` → `.env` (or set in your MCP client config) and fill in:
 
 ```env
-OPENDATA_BASE_URL=https://api.opendata.example.com   # required at call time
+OPENDATA_BASE_URL=https://api.tryopendata.ai   # required at call time
 OPENDATA_API_KEY=od_live_xxx                         # required for writes
 # OPENDATA_READ_ONLY=true                            # optional: only register GET tools
 # OPENDATA_TIMEOUT_MS=30000                          # optional: per-request timeout
@@ -45,7 +45,7 @@ The server speaks MCP over **stdio** — wire it into any MCP-capable client. Ex
       "command": "node",
       "args": ["/absolute/path/to/opendata-mcp/dist/index.js"],
       "env": {
-        "OPENDATA_BASE_URL": "https://api.opendata.example.com",
+        "OPENDATA_BASE_URL": "https://api.tryopendata.ai",
         "OPENDATA_API_KEY": "od_live_xxx"
       }
     }
@@ -63,7 +63,7 @@ npm run typecheck   # tsc --noEmit
 Live tests against the real API run **only** when `OPENDATA_BASE_URL` is set:
 
 ```bash
-OPENDATA_BASE_URL=https://api.opendata.example.com npm test
+OPENDATA_BASE_URL=https://api.tryopendata.ai npm test
 ```
 
 ## How tool generation works
