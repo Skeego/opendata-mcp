@@ -10,9 +10,11 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) server for the **Op
 
 ## Install
 
+Uses [pnpm](https://pnpm.io/) (pinned via `packageManager` in `package.json` so `corepack enable` is enough to get the right version).
+
 ```bash
-npm install
-npm run build
+pnpm install
+pnpm run build
 ```
 
 ## Configure
@@ -34,10 +36,10 @@ Secrets are never read from the repo. `.env` is gitignored; `.env.example` ships
 
 ```bash
 # Dev (tsx, no build step)
-npm run dev
+pnpm run dev
 
 # Production (after build)
-npm start
+pnpm start
 ```
 
 The server speaks MCP over **stdio** — wire it into any MCP-capable client. Example client config (Claude Desktop / similar):
@@ -60,14 +62,14 @@ The server speaks MCP over **stdio** — wire it into any MCP-capable client. Ex
 ## Test
 
 ```bash
-npm test            # unit tests (mocked fetch — offline-safe)
-npm run typecheck   # tsc --noEmit
+pnpm test            # unit tests (mocked fetch — offline-safe)
+pnpm run typecheck   # tsc --noEmit
 ```
 
 Live tests against the real API run **only** when `OPENDATA_BASE_URL` is set:
 
 ```bash
-OPENDATA_BASE_URL=https://api.tryopendata.ai npm test
+OPENDATA_BASE_URL=https://api.tryopendata.ai pnpm test
 ```
 
 CI runs the unit suite on every push/PR ([badge above](#opendata-mcp)). The live smoke job runs on a daily schedule (and on pushes to `main`) only if the repo has `OPENDATA_BASE_URL` (and optionally `OPENDATA_API_KEY`) configured as Actions secrets — it's `continue-on-error: true` so a transient upstream outage doesn't show the repo as red.
